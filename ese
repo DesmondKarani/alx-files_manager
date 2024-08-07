@@ -1,0 +1,40 @@
+// worker.js
+
+import Bull from 'bull';
+import imageThumbnail from 'image-thumbnail';
+import { ObjectID } from 'mongodb';
+import fs from 'fs';
+import dbClient from './utils/db';
+
+const fileQueue = new Bull('fileQueue');
+
+const generateThumbnail = async (path, options) => {
+  try {
+    const thumbnail = await imageThumbnail(path, options);
+    const thumbnailPath = `${path}_${options.width}`;
+    await fs.promises.writeFile(thumbnailPath, thumbnail);
+  } catch (err) {
+    console.error(`Error generating thumbnail: ${err.message}`);
+  }
+};
+
+fileQueue.process(async (job) => {
+  const { fileId } = job.data;
+  if (!fileId) throw new Error('Missing fileId');
+
+  const file = await dbClient.db.collection('files').findOne({ _id: ObjectID(fileId) });
+  if (!file) throw new Error('File not found');
+
+  const optionsList = [{ width: 500 }, { width: 250 }, { width: 100 }];
+  const thumbnailPromises = optionsList.map((options) => generateThumbnail(file.localPath, options));
+  await Promise.all(thumbnailPromises);
+
+  const updatedFile = await dbClient.db.collection('files').updateOne(
+    { _id: ObjectID(fileId) },
+    { $set: { isPublic: true } },
+  );
+
+  return updatedFile;
+});
+
+export default fileQueue;
